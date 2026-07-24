@@ -1,0 +1,3 @@
+"""
+Aplicación FastAPI.
+"""

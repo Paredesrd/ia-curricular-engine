@@ -1,0 +1,3 @@
+"""
+Core: configuración, seguridad, dependencias.
+"""
