@@ -1,7 +1,1 @@
-.venv/
-node_modules/
-__pycache__/
-.env
-.idea/
-dist/
-build/
+Nothing should be ignored based on the provided file changes. The only modified file is a Python source file (`api/app/core/security.py`), which should not be ignored.

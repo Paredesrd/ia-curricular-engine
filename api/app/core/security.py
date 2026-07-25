@@ -17,7 +17,13 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def hash_password(plain_password: str) -> str:
-    """Retorna el hash bcrypt de una contraseña en texto plano."""
+    """Retorna el hash bcrypt de una contraseña en texto plano.
+    
+    bcrypt tiene un límite de 72 bytes, se trunca la contraseña si es necesario.
+    """
+    # bcrypt limita contraseñas a 72 bytes, truncamos para evitar error
+    if len(plain_password) > 72:
+        plain_password = plain_password[:72]
     return pwd_context.hash(plain_password)
 
 
