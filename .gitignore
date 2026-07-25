@@ -1,1 +1,42 @@
-Nothing should be ignored based on the provided file changes. The only modified file is a Python source file (`api/app/core/security.py`), which should not be ignored.
+```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dependencies
+venv/
+.venv/
+.env
+.env.local
+*.env.*
+
+# Logs
+*.log
+
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts
+build/
+dist/
+target/
+.mypy_cache/
+.pytest_cache/
+```

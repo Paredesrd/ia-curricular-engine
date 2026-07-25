@@ -17,7 +17,7 @@ from api.app.core.security import (
 from api.app.crud.tenant import create_tenant, get_tenant_by_slug
 from api.app.crud.user import (
     create_user,
-    get_user_by_email_and_tenant,
+    get_user_by_email,
 )
 from api.app.models.user import ROLE_ADMIN, User
 from api.app.schemas.user import (
@@ -82,13 +82,12 @@ def register(payload: UserRegisterRequest, db: Session = Depends(get_db)):
     summary="Autenticar y obtener un JWT",
 )
 def login(
-    tenant_slug: str = Form(..., description="Identificador del colegio (slug)."),
     username: str = Form(..., description="Email del usuario."),
     password: str = Form(...),
     db: Session = Depends(get_db),
 ):
     """
-    Autenticación por email + password + slug del tenant.
+    Autenticación por email + password.
     Retorna un JWT. Usa Form para compatibilidad con el botón Authorize de /docs.
     Cualquier fallo devuelve 401 genérico (no enumera tenants ni usuarios).
     """
@@ -98,11 +97,7 @@ def login(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    tenant = get_tenant_by_slug(db, tenant_slug)
-    if tenant is None or not tenant.is_active:
-        raise invalid
-
-    user = get_user_by_email_and_tenant(db, email=username, tenant_id=tenant.id)
+    user = get_user_by_email(db, email=username)
     if user is None or not verify_password(password, user.hashed_password):
         raise invalid
 

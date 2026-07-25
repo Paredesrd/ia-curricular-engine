@@ -22,9 +22,9 @@ def hash_password(plain_password: str) -> str:
     bcrypt tiene un límite de 72 bytes, se trunca la contraseña si es necesario.
     """
     # bcrypt limita contraseñas a 72 bytes, truncamos para evitar error
-    if len(plain_password) > 72:
-        plain_password = plain_password[:72]
-    return pwd_context.hash(plain_password)
+    # Passlib ya no lo hace automáticamente en versiones recientes
+    truncated_password = plain_password[:72] if len(plain_password) > 72 else plain_password
+    return pwd_context.hash(truncated_password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:

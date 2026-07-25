@@ -34,7 +34,6 @@ export interface RegisterData {
 }
 
 export interface LoginData {
-  tenant_slug: string
   username: string
   password: string
 }

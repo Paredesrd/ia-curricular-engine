@@ -29,6 +29,16 @@ def get_user_by_email_and_tenant(
     return db.execute(stmt).scalar_one_or_none()
 
 
+def get_user_by_email(db: Session, email: str) -> User | None:
+    """Obtiene un usuario por email (sin filtrar por tenant)."""
+    stmt = (
+        select(User)
+        .options(selectinload(User.tenant))
+        .where(User.email == email)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
 def create_user(
     db: Session,
     *,
