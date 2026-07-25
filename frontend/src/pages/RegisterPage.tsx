@@ -2,15 +2,10 @@ import { useState, FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
-const slugify = (v: string) =>
-  v.toLowerCase().trim().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-')
-
 export default function RegisterPage() {
   const { register } = useAuth()
   const navigate = useNavigate()
   const [tenantName, setTenantName] = useState('')
-  const [tenantSlug, setTenantSlug] = useState('')
-  const [slugTouched, setSlugTouched] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [fullName, setFullName] = useState('')
@@ -18,17 +13,12 @@ export default function RegisterPage() {
   const [success, setSuccess] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const onName = (v: string) => {
-    setTenantName(v)
-    if (!slugTouched) setTenantSlug(slugify(v))
-  }
-
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     setError(''); setSuccess('')
     setLoading(true)
     try {
-      await register({ tenant_name: tenantName, tenant_slug: tenantSlug, email, password, full_name: fullName })
+      await register({ tenant_name: tenantName, email, password, full_name: fullName })
       setSuccess('Colegio registrado. Redirigiendo al inicio de sesión…')
       setTimeout(() => navigate('/login'), 1200)
     } catch (err) {
@@ -63,11 +53,7 @@ export default function RegisterPage() {
           <form onSubmit={handleSubmit}>
             <div className="form-group">
               <label>Nombre del colegio</label>
-              <input value={tenantName} onChange={e => onName(e.target.value)} placeholder="Colegio de Ingenieros del Perú" required />
-            </div>
-            <div className="form-group">
-              <label>Identificador único (slug) <span className="hint">· minúsculas y guiones</span></label>
-              <input value={tenantSlug} onChange={e => { setTenantSlug(slugify(e.target.value)); setSlugTouched(true) }} placeholder="colegio-ingenieros-peru" required />
+              <input value={tenantName} onChange={e => setTenantName(e.target.value)} placeholder="Colegio de Ingenieros del Perú" required />
             </div>
             <div className="form-group">
               <label>Tu nombre completo</label>

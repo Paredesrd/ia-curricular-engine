@@ -17,7 +17,7 @@ from api.app.core.security import (
 from api.app.crud.tenant import create_tenant, get_tenant_by_slug
 from api.app.crud.user import (
     create_user,
-    get_user_by_email_and_tenant,
+    get_user_by_email,
 )
 from api.app.models.user import ROLE_ADMIN, User
 from api.app.schemas.user import (
@@ -39,14 +39,27 @@ router = APIRouter()
 def register(payload: UserRegisterRequest, db: Session = Depends(get_db)):
     """
     Crea un tenant nuevo (colegio) y a su primer usuario con rol admin.
+    El slug se genera automáticamente a partir del nombre del colegio.
     - Si el slug ya existe → 409.
     - Operación atómica: si algo falla, no queda tenant huérfano.
     """
-    # 1. El slug debe estar libre (regla de seguridad: no colarse en tenant ajeno).
-    if get_tenant_by_slug(db, payload.tenant_slug) is not None:
+    # Generar slug automático a partir del nombre
+    import re
+    def generate_slug(name: str) -> str:
+        slug = name.lower().strip()
+        slug = re.sub(r'[^a-z0-9\s-]', '', slug)
+        slug = re.sub(r'\s+', '-', slug)
+        slug = re.sub(r'-+', '-', slug)
+        return slug
+    
+    auto_slug = generate_slug(payload.tenant_name)
+    
+    # Verificar si el slug generado ya existe
+    existing_tenant = get_tenant_by_slug(db, auto_slug)
+    if existing_tenant is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="El identificador del colegio (slug) ya está registrado.",
+            detail=f"Ya existe un colegio con nombre similar. Intenta con otro nombre.",
         )
 
     try:
@@ -54,7 +67,7 @@ def register(payload: UserRegisterRequest, db: Session = Depends(get_db)):
         tenant = create_tenant(
             db,
             name=payload.tenant_name,
-            slug=payload.tenant_slug,
+            slug=auto_slug,
         )
         user = create_user(
             db,
@@ -70,7 +83,7 @@ def register(payload: UserRegisterRequest, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Conflicto de unicidad al registrar (slug o email).",
+            detail="Conflicto de unicidad al registrar (email).",
         )
 
     return user
@@ -82,13 +95,12 @@ def register(payload: UserRegisterRequest, db: Session = Depends(get_db)):
     summary="Autenticar y obtener un JWT",
 )
 def login(
-    tenant_slug: str = Form(..., description="Identificador del colegio (slug)."),
     username: str = Form(..., description="Email del usuario."),
     password: str = Form(...),
     db: Session = Depends(get_db),
 ):
     """
-    Autenticación por email + password + slug del tenant.
+    Autenticación por email + password.
     Retorna un JWT. Usa Form para compatibilidad con el botón Authorize de /docs.
     Cualquier fallo devuelve 401 genérico (no enumera tenants ni usuarios).
     """
@@ -98,11 +110,7 @@ def login(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    tenant = get_tenant_by_slug(db, tenant_slug)
-    if tenant is None or not tenant.is_active:
-        raise invalid
-
-    user = get_user_by_email_and_tenant(db, email=username, tenant_id=tenant.id)
+    user = get_user_by_email(db, email=username)
     if user is None or not verify_password(password, user.hashed_password):
         raise invalid
 
