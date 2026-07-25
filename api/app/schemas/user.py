@@ -15,16 +15,10 @@ class UserRegisterRequest(BaseModel):
     """
     Payload de registro.
     Crea un nuevo tenant (colegio) y a su admin fundador en una sola operación.
+    El slug se genera automáticamente a partir del nombre del colegio.
     """
 
     tenant_name: str = Field(..., min_length=3, max_length=255)
-    tenant_slug: str = Field(
-        ...,
-        min_length=3,
-        max_length=60,
-        pattern=SLUG_PATTERN,
-        description="Identificador único del colegio (lowercase, guiones).",
-    )
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
     full_name: str = Field(..., min_length=2, max_length=255)

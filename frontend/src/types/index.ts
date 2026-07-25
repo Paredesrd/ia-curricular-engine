@@ -27,7 +27,6 @@ export interface TokenResponse {
 
 export interface RegisterData {
   tenant_name: string
-  tenant_slug: string
   email: string
   password: string
   full_name: string
