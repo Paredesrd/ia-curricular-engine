@@ -2,9 +2,6 @@ import { useState, FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 
-const slugify = (v: string) =>
-  v.toLowerCase().trim().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-')
-
 export default function RegisterPage() {
   const { register } = useAuth()
   const navigate = useNavigate()

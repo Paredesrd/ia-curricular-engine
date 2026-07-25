@@ -1,44 +1,41 @@
-```
+```gitignore
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+target/
+
 # Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
-# Database
-ia_curricular_dev.db
-
-# Dependencies
+.Python
+env/
 venv/
 .venv/
+.ENV
 .env
+.env.*
 .env.local
-*.env.*
+.env.production
+.env.development
+.mypy_cache/
+.pytest_cache/
+.coverage
+coverage/
 
 # Logs
 *.log
 
-# Coverage
-.coverage
-htmlcov/
-coverage/
-
-# MyPy
-.mypy_cache/
-
-# Pytest
-.pytest_cache/
-
-# Build artifacts
-build/
-dist/
-*.egg-info/
-
-# Editors
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*.tmp
 
 # OS
 .DS_Store
@@ -63,4 +60,8 @@ Thumbs.db
 *.Z
 *.lz
 *.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
 ```
