@@ -2,7 +2,6 @@
 api/tests/conftest.py
 Fixtures de pytest: DB de test aislada, client de FastAPI, tokens de auth.
 """
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -16,10 +15,8 @@ from api.app.crud.user import create_user
 from api.app.main import app
 from api.app.models.user import ROLE_INSTRUCTOR
 
-
 # DB de test en memoria (SQLite)
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
-
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     connect_args={"check_same_thread": False},
@@ -48,6 +45,7 @@ def client(db_session):
             yield db_session
         finally:
             pass
+
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as c:
         yield c
@@ -64,8 +62,8 @@ def auth_token(client):
         "password": "TestPass123",
         "full_name": "Test User",
     })
+    # Login sin slug: el backend deduce el tenant del email.
     resp = client.post("/api/v1/auth/login", data={
-        "tenant_slug": "colegio-test",
         "username": "test@test.com",
         "password": "TestPass123",
     })
@@ -83,7 +81,6 @@ def auth_token_2(client):
         "full_name": "Test User 2",
     })
     resp = client.post("/api/v1/auth/login", data={
-        "tenant_slug": "colegio-test-2",
         "username": "test2@test.com",
         "password": "TestPass456",
     })
@@ -114,7 +111,6 @@ def auth_token_instructor(client, db_session):
     )
     db_session.commit()
     resp = client.post("/api/v1/auth/login", data={
-        "tenant_slug": "colegio-inst",
         "username": "instr@test.com",
         "password": "InstrPass123",
     })

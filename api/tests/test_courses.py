@@ -1,8 +1,8 @@
 """
 api/tests/test_courses.py
-Tests del módulo de cursos: creación, listado, consulta, aislamiento multi-tenant.
+Tests del módulo de cursos: creación, listado, consulta, aislamiento
+multi-tenant y ELIMINACIÓN (opción A).
 """
-
 import uuid
 
 
@@ -85,3 +85,76 @@ def test_get_nonexistent_course(client, auth_token):
         headers={"Authorization": f"Bearer {auth_token}"},
     )
     assert resp.status_code == 404
+
+
+# ============================================================
+# ELIMINACIÓN (opción A)
+# ============================================================
+def test_delete_course_success(client, auth_token):
+    """Eliminar curso propio retorna 204 y el curso deja de existir (404)."""
+    resp_create = client.post(
+        "/api/v1/courses",
+        json={"topic": "Diseño de Estructuras de Acero"},
+        headers={"Authorization": f"Bearer {auth_token}"},
+    )
+    assert resp_create.status_code == 201
+    course_id = resp_create.json()["id"]
+
+    resp_del = client.delete(
+        f"/api/v1/courses/{course_id}",
+        headers={"Authorization": f"Bearer {auth_token}"},
+    )
+    assert resp_del.status_code == 204
+
+    # Tras borrar, consultar el mismo id debe dar 404.
+    resp_get = client.get(
+        f"/api/v1/courses/{course_id}",
+        headers={"Authorization": f"Bearer {auth_token}"},
+    )
+    assert resp_get.status_code == 404
+
+
+def test_delete_course_from_other_tenant(client, auth_token, auth_token_2):
+    """Eliminar curso de otro tenant retorna 404 (aislamiento multi-tenant)."""
+    resp_create = client.post(
+        "/api/v1/courses",
+        json={"topic": "Diseño de Estructuras de Acero"},
+        headers={"Authorization": f"Bearer {auth_token}"},
+    )
+    course_id = resp_create.json()["id"]
+
+    resp_del = client.delete(
+        f"/api/v1/courses/{course_id}",
+        headers={"Authorization": f"Bearer {auth_token_2}"},
+    )
+    assert resp_del.status_code == 404
+
+    # El curso del tenant 1 sigue existiendo (el 2 no lo tocó).
+    resp_get = client.get(
+        f"/api/v1/courses/{course_id}",
+        headers={"Authorization": f"Bearer {auth_token}"},
+    )
+    assert resp_get.status_code == 200
+
+
+def test_delete_course_without_token(client, auth_token):
+    """Eliminar curso sin token retorna 401."""
+    resp_create = client.post(
+        "/api/v1/courses",
+        json={"topic": "Diseño de Estructuras de Acero"},
+        headers={"Authorization": f"Bearer {auth_token}"},
+    )
+    course_id = resp_create.json()["id"]
+
+    resp_del = client.delete(f"/api/v1/courses/{course_id}")
+    assert resp_del.status_code == 401
+
+
+def test_delete_nonexistent_course(client, auth_token):
+    """Eliminar curso inexistente retorna 404."""
+    fake_id = str(uuid.uuid4())
+    resp_del = client.delete(
+        f"/api/v1/courses/{fake_id}",
+        headers={"Authorization": f"Bearer {auth_token}"},
+    )
+    assert resp_del.status_code == 404

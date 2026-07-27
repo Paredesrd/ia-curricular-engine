@@ -1,6 +1,10 @@
 """
 api/tests/test_auth.py
 Tests de autenticación: registro, login, /me.
+
+CONTRATO: el login NO usa tenant_slug (el backend deduce el colegio desde el
+email). El registro SÍ lo usa (crea el tenant con ese slug). Estos tests
+reflejan ese contrato.
 """
 
 
@@ -39,7 +43,7 @@ def test_register_duplicate_slug(client):
 
 
 def test_login_success(client):
-    """Login exitoso retorna 200 con access_token."""
+    """Login exitoso retorna 200 con access_token (sin tenant_slug)."""
     client.post("/api/v1/auth/register", json={
         "tenant_name": "Colegio de Test",
         "tenant_slug": "colegio-test",
@@ -48,7 +52,6 @@ def test_login_success(client):
         "full_name": "Test User",
     })
     resp = client.post("/api/v1/auth/login", data={
-        "tenant_slug": "colegio-test",
         "username": "test@test.com",
         "password": "TestPass123",
     })
@@ -57,7 +60,7 @@ def test_login_success(client):
 
 
 def test_login_invalid_credentials(client):
-    """Login con contraseña incorrecta retorna 401."""
+    """Login con contraseña incorrecta retorna 401 (sin tenant_slug)."""
     client.post("/api/v1/auth/register", json={
         "tenant_name": "Colegio de Test",
         "tenant_slug": "colegio-test",
@@ -66,7 +69,6 @@ def test_login_invalid_credentials(client):
         "full_name": "Test User",
     })
     resp = client.post("/api/v1/auth/login", data={
-        "tenant_slug": "colegio-test",
         "username": "test@test.com",
         "password": "WrongPass",
     })
