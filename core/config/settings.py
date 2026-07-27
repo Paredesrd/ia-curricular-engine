@@ -3,17 +3,15 @@ config/settings.py
 Configuración centralizada del sistema.
 Todos los parámetros globales, rutas, logging y constantes del motor.
 """
-
 import logging
 import sys
 from pathlib import Path
-from pydantic import BaseModel, Field
 
+from pydantic import BaseModel, Field
 
 # ============================================================
 # RUTAS DEL PROYECTO
 # ============================================================
-
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 DOMAIN_DIR: Path = PROJECT_ROOT / "domain"
 AGENTS_DIR: Path = PROJECT_ROOT / "agents"
@@ -25,7 +23,6 @@ OUTPUT_DIR: Path = PROJECT_ROOT / "output"
 # ============================================================
 # CONFIGURACIÓN DEL SISTEMA
 # ============================================================
-
 class Settings(BaseModel):
     """
     Configuración global del motor de IA curricular.
@@ -35,31 +32,31 @@ class Settings(BaseModel):
     # --- Identidad del sistema ---
     system_name: str = Field(
         default="IA Curricular Engine",
-        description="Nombre del sistema"
+        description="Nombre del sistema",
     )
     version: str = Field(
         default="0.1.0",
-        description="Versión del sistema"
+        description="Versión del sistema",
     )
     environment: str = Field(
         default="development",
         pattern="^(development|staging|production)$",
-        description="Entorno de ejecución"
+        description="Entorno de ejecución",
     )
 
     # --- Logging ---
     log_level: str = Field(
         default="INFO",
         pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$",
-        description="Nivel de logging"
+        description="Nivel de logging",
     )
     log_format: str = Field(
         default="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        description="Formato de los mensajes de log"
+        description="Formato de los mensajes de log",
     )
     log_date_format: str = Field(
         default="%Y-%m-%d %H:%M:%S",
-        description="Formato de fecha en logs"
+        description="Formato de fecha en logs",
     )
 
     # --- Parámetros de los agentes ---
@@ -67,42 +64,49 @@ class Settings(BaseModel):
         default=3,
         ge=1,
         le=10,
-        description="Máximo de reintentos por agente ante fallo"
+        description=(
+            "Máximo de intentos del par Arquitecto+Auditor antes de dar "
+            "el curso por no aprobable."
+        ),
     )
     agent_timeout_seconds: int = Field(
         default=300,
         ge=30,
-        description="Timeout en segundos por ejecución de agente"
+        description=(
+            "Reserva de timeout por agente. Hoy los agentes son deterministas "
+            "y rápidos, por lo que no se aplica un watchdog; se usará al "
+            "integrar un LLM (Fase 2)."
+        ),
     )
 
     # --- Parámetros curriculares por defecto ---
     default_min_hours_per_lesson: float = Field(
         default=0.5,
         gt=0,
-        description="Horas mínimas por lección si el Tenant no especifica"
+        description="Horas mínimas por lección si el Tenant no especifica",
     )
     default_max_hours_per_lesson: float = Field(
         default=4.0,
         gt=0,
-        description="Horas máximas por lección si el Tenant no especifica"
+        description="Horas máximas por lección si el Tenant no especifica",
     )
-    max_cognitive_load_per_module: float = Field(
-        default=8.0,
-        gt=0,
-        description="Carga cognitiva máxima por módulo (horas)"
+    max_modules: int = Field(
+        default=12,
+        ge=1,
+        le=30,
+        description="Límite superior de módulos por curso (tope de seguridad).",
     )
 
     # --- Output ---
     output_encoding: str = Field(
         default="utf-8",
-        description="Codificación de archivos de salida"
+        description="Codificación de archivos de salida",
     )
 
 
 # ============================================================
 # SINGLETON DE CONFIGURACIÓN
 # ============================================================
-
 _settings_instance: Settings | None = None
 
 
@@ -119,14 +123,12 @@ def get_settings() -> Settings:
 # ============================================================
 # CONFIGURACIÓN DE LOGGING
 # ============================================================
-
 def setup_logging() -> logging.Logger:
     """
     Configura y retorna el logger raíz del sistema.
     Se llama UNA sola vez al arrancar el motor.
     """
     settings = get_settings()
-
     logger = logging.getLogger(settings.system_name)
     logger.setLevel(getattr(logging, settings.log_level))
 

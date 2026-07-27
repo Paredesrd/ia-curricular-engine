@@ -4,4 +4,6 @@ __pycache__/
 .env
 .idea/
 dist/
-build/
+build/ia_curricular_dev.db
+core/output/*.json
+COMANDOS

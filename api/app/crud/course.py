@@ -2,12 +2,9 @@
 api/app/crud/course.py
 CRUD del modelo Course.
 """
-
 import uuid
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
 from api.app.models.course import (
     Course,
     STATUS_IN_PROGRESS,
@@ -75,12 +72,24 @@ def update_course_generation(
     return course
 
 
-# Re-export de estados para comodidad del router.
+def delete_course(db: Session, course: Course) -> None:
+    """
+    Marca el curso para borrado. NO hace commit (lo decide el router).
+    El curso no tiene tablas hijas con FK apuntándole, así que el borrado es
+    limpio. IMPORTANTE: tras el commit NO se debe hacer db.refresh(course),
+    porque la fila ya no existe.
+    """
+    db.delete(course)
+    db.flush()
+
+
+# Re-export de estados y funciones para comodidad del router.
 __all__ = [
     "create_course",
     "get_course_by_id",
     "list_courses_by_tenant",
     "update_course_generation",
+    "delete_course",
     "STATUS_COMPLETED",
     "STATUS_FAILED",
 ]

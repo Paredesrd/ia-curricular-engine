@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext'
 export default function LoginPage() {
   const { login } = useAuth()
   const navigate = useNavigate()
-  const [tenantSlug, setTenantSlug] = useState('')
+
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -16,7 +16,9 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      await login({ tenant_slug: tenantSlug, username: email, password })
+      // Login solo con email + password. El tenant (colegio) lo deduce el
+      // backend a partir del correo; el slug ya no se pide al usuario.
+      await login({ username: email, password })
       navigate('/dashboard')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error al iniciar sesión')
@@ -30,8 +32,13 @@ export default function LoginPage() {
       <div className="auth-aside">
         <div>
           <div className="kicker">IA Curricular Engine</div>
-          <h2>Diseño instruccional <em>acreditado</em>, sin ser pedagogo.</h2>
-          <p>Tu colegio define las reglas de acreditación. El instructor pone el tema. El motor construye el curso completo.</p>
+          <h2>
+            Diseño instruccional <em>acreditado</em>, sin ser pedagogo.
+          </h2>
+          <p>
+            Tu colegio define las reglas de acreditación. El instructor pone el
+            tema. El motor construye el curso completo.
+          </p>
         </div>
         <div className="marks">
           <span>Multi-colegio</span>
@@ -48,19 +55,38 @@ export default function LoginPage() {
           {error && <div className="alert alert-error">{error}</div>}
           <form onSubmit={handleSubmit}>
             <div className="form-group">
-              <label>Identificador del colegio (slug)</label>
-              <input value={tenantSlug} onChange={e => setTenantSlug(e.target.value)} placeholder="colegio-ingenieros-peru" required />
-            </div>
-            <div className="form-group">
               <label>Correo electrónico</label>
-              <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="admin@colegio.pe" required />
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="admin@colegio.pe"
+                autoComplete="email"
+                required
+              />
             </div>
             <div className="form-group">
               <label>Contraseña</label>
-              <input type="password" value={password} onChange={e => setPassword(e.target.value)} required />
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
             </div>
-            <button type="submit" className="btn btn-primary btn-block" disabled={loading}>
-              {loading ? <><span className="spinner" /> Entrando…</> : 'Iniciar sesión'}
+            <button
+              type="submit"
+              className="btn btn-primary btn-block"
+              disabled={loading}
+            >
+              {loading ? (
+                <>
+                  <span className="spinner" /> Entrando…
+                </>
+              ) : (
+                'Iniciar sesión'
+              )}
             </button>
           </form>
           <div className="auth-foot">

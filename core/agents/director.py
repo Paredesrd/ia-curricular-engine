@@ -1,18 +1,16 @@
 """
 agents/director.py
 Agente Director: primer agente de la cadena.
-
 Responsabilidad única:
   - Recibir las TenantRules (reglas de acreditación del colegio)
-    y el InstructorInput (tema técnico del instructor).
+    y el InstructorInput (tema técnico + intención enriquecida del instructor).
   - Validar la consistencia de las reglas del Tenant.
   - Generar un DirectorBrief estructurado con todas las restricciones
-    procesadas y listas para el Arquitecto Curricular.
+    procesadas Y la intención del instructor propagada, listas para el
+    Arquitecto Curricular.
   - Emitir un AgentMessage dirigido al Arquitecto.
-
-El Director NO diseña el curso. Solo prepara el terreno.
+El Director NO diseña el curso. Solo prepara el terreno y propaga la intención.
 """
-
 import uuid
 import logging
 from datetime import datetime, timezone
@@ -44,7 +42,6 @@ class DirectorAgent:
     # ----------------------------------------------------------------
     # MÉTODO PÚBLICO PRINCIPAL
     # ----------------------------------------------------------------
-
     def process(
         self,
         tenant_rules: TenantRules,
@@ -57,11 +54,9 @@ class DirectorAgent:
 
         Args:
             tenant_rules: Reglas de acreditación del colegio.
-            instructor_input: Tema técnico del instructor.
-
+            instructor_input: Tema técnico + intención enriquecida del instructor.
         Returns:
             AgentMessage con message_type='director_brief'.
-
         Raises:
             ValueError: Si las reglas del Tenant son inconsistentes.
         """
@@ -85,7 +80,7 @@ class DirectorAgent:
             len(constraints_summary),
         )
 
-        # Paso 4: Construir el DirectorBrief
+        # Paso 4: Construir el DirectorBrief (incluye la intención enriquecida)
         brief = DirectorBrief(
             course_id=course_id,
             topic=instructor_input.topic.strip(),
@@ -99,6 +94,53 @@ class DirectorAgent:
                 if instructor_input.additional_context
                 else None
             ),
+            # --- Intención enriquecida del elicitor (propagada tal cual) ---
+            course_name=(
+                instructor_input.course_name.strip()
+                if instructor_input.course_name
+                else None
+            ),
+            creator_authority=(
+                instructor_input.creator_authority.strip()
+                if instructor_input.creator_authority
+                else None
+            ),
+            operational_goal=(
+                instructor_input.operational_goal.strip()
+                if instructor_input.operational_goal
+                else None
+            ),
+            final_deliverable=(
+                instructor_input.final_deliverable.strip()
+                if instructor_input.final_deliverable
+                else None
+            ),
+            audience_profile=(
+                instructor_input.audience_profile.strip()
+                if instructor_input.audience_profile
+                else None
+            ),
+            content_pillars=(
+                instructor_input.content_pillars.strip()
+                if instructor_input.content_pillars
+                else None
+            ),
+            application_context=(
+                instructor_input.application_context.strip()
+                if instructor_input.application_context
+                else None
+            ),
+            out_of_scope=(
+                instructor_input.out_of_scope.strip()
+                if instructor_input.out_of_scope
+                else None
+            ),
+            tone=(
+                instructor_input.tone.strip()
+                if instructor_input.tone
+                else None
+            ),
+            # --- Restricciones del Tenant ---
             tenant_id=tenant_rules.tenant_id,
             tenant_name=tenant_rules.tenant_name,
             min_total_hours=tenant_rules.min_total_hours,
@@ -113,13 +155,18 @@ class DirectorAgent:
             created_at=self._now_iso(),
         )
 
+        # Señal de depuración: ¿viajó la intención enriquecida?
+        has_intent = bool(
+            brief.content_pillars or brief.operational_goal or brief.course_name
+        )
         self._logger.info(
             "DirectorBrief construido | Curso: %s | Horas: %d-%d | "
-            "Bloom requeridos: %s",
+            "Bloom requeridos: %s | Intención enriquecida: %s",
             brief.course_id,
             brief.min_total_hours,
             brief.max_total_hours,
             [b.value for b in brief.required_bloom_levels],
+            "SÍ" if has_intent else "no (modo tema)",
         )
 
         # Paso 5: Envolver en AgentMessage
@@ -130,46 +177,39 @@ class DirectorAgent:
             payload=brief.model_dump(mode="json"),
             timestamp=self._now_iso(),
         )
-
         self._logger.info(
             "AgentMessage emitido: Director → Arquitecto | Tipo: %s",
             message.message_type,
         )
-
         return message
 
     # ----------------------------------------------------------------
     # MÉTODOS PRIVADOS
     # ----------------------------------------------------------------
-
     def _validate_tenant_rules(self, rules: TenantRules) -> None:
         """
         Valida la consistencia interna de las reglas del Tenant.
         Lanza ValueError si detecta inconsistencias.
         """
         errors: list[str] = []
-
         # Horas totales
         if rules.min_total_hours > rules.max_total_hours:
             errors.append(
                 f"min_total_hours ({rules.min_total_hours}) > "
                 f"max_total_hours ({rules.max_total_hours})"
             )
-
         # Horas por módulo
         if rules.min_module_hours > rules.max_module_hours:
             errors.append(
                 f"min_module_hours ({rules.min_module_hours}) > "
                 f"max_module_hours ({rules.max_module_hours})"
             )
-
         # Lecciones por módulo
         if rules.min_lessons_per_module > rules.max_lessons_per_module:
             errors.append(
                 f"min_lessons_per_module ({rules.min_lessons_per_module}) > "
                 f"max_lessons_per_module ({rules.max_lessons_per_module})"
             )
-
         # Horas de módulo vs horas totales
         if rules.min_module_hours > rules.max_total_hours:
             errors.append(
@@ -177,11 +217,9 @@ class DirectorAgent:
                 f"max_total_hours ({rules.max_total_hours}): "
                 f"imposible cumplir con al menos 1 módulo"
             )
-
         # Niveles de Bloom requeridos
         if len(rules.required_bloom_levels) == 0:
             errors.append("required_bloom_levels no puede estar vacío")
-
         # Verificar duplicados en Bloom
         bloom_values = [b.value for b in rules.required_bloom_levels]
         if len(bloom_values) != len(set(bloom_values)):
@@ -206,33 +244,27 @@ class DirectorAgent:
         a partir de las reglas del Tenant.
         """
         constraints: list[str] = []
-
         constraints.append(
             f"El curso DEBE tener entre {rules.min_total_hours} y "
             f"{rules.max_total_hours} horas totales."
         )
-
         constraints.append(
             f"Cada módulo DEBE tener entre {rules.min_module_hours} y "
             f"{rules.max_module_hours} horas."
         )
-
         constraints.append(
             f"Cada módulo DEBE tener entre {rules.min_lessons_per_module} y "
             f"{rules.max_lessons_per_module} lecciones."
         )
-
         bloom_names = [b.value for b in rules.required_bloom_levels]
         constraints.append(
             f"El curso DEBE incluir los siguientes niveles de Bloom: "
             f"{', '.join(bloom_names)}."
         )
-
         if rules.custom_restrictions:
             constraints.append(
                 f"Restricción adicional del colegio: {rules.custom_restrictions}"
             )
-
         return constraints
 
     def _generate_course_id(self, tenant_id: str) -> str:

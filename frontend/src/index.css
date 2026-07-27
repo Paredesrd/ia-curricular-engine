@@ -377,3 +377,38 @@ input:focus, textarea:focus, select:focus {
   .bloom-pick { grid-template-columns: 1fr 1fr; }
   .lesson-body { padding-left: 22px; }
 }
+
+/* ---------- Intake (Crear curso): layout + asistente que acompaña ---------- */
+.intake-layout {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 22px;
+  /* stretch (por defecto): la columna del asistente se estira a la altura del
+     formulario, y eso es lo que le da al sticky el recorrido para viajar. */
+}
+.intake-aside {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.intake-sticky {
+  position: sticky;
+  top: 96px;            /* justo bajo el topbar (sticky top:0, ~90px de alto) */
+  z-index: 4;           /* por debajo del topbar (z-index:5) */
+  align-self: start;    /* en el flex: altura natural, no se estira verticalmente */
+  transition: box-shadow .3s ease;
+}
+/* Punto de estado del asistente: transición suave de color (feedback sin ruido) */
+.intake-dot { transition: background .35s ease; }
+.intake-dot--live { animation: pulseDot 1.6s ease-in-out infinite; }
+
+@media (max-width: 920px) {
+  .intake-layout { grid-template-columns: 1fr; }
+  .intake-aside { order: -1; }            /* en móvil el asistente va arriba */
+  .intake-sticky {
+    top: 92px;
+    max-height: 46vh;                     /* franja fija arriba */
+    overflow: auto;                       /* si el mensaje es largo, scrollea él solo */
+    -webkit-overflow-scrolling: touch;
+  }
+}

@@ -1,8 +1,8 @@
 """
 api/app/api/courses.py
-Router de cursos: pedir generación, listar y consultar (multi-tenant aislado).
+Router de cursos: pedir generación, listar, consultar y eliminar
+(multi-tenant aislado).
 """
-
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,6 +21,7 @@ from api.app.crud.course import (
     get_course_by_id,
     list_courses_by_tenant,
     update_course_generation,
+    delete_course,
     STATUS_COMPLETED,
     STATUS_FAILED,
 )
@@ -31,7 +32,6 @@ from api.app.schemas.course import (
     CourseResponse,
     CourseSummary,
 )
-
 
 router = APIRouter()
 
@@ -73,12 +73,28 @@ def create_and_generate(
     Crea la ficha del curso y ejecuta la cadena de 4 agentes del núcleo.
     Persiste el resultado (matriz, reporte, contenido) y devuelve el curso.
     Si la generación falla, la ficha queda como 'failed' y se retorna 500.
+
+    La intención enriquecida del elicitor (9 campos) se pasa al núcleo vía
+    InstructorInput para que los agentes la usen como "huesos" del curso.
+    No se persiste como columnas (el resultado generado ya la refleja).
     """
     tenant_rules = _build_tenant_rules(current_user.tenant)
+
     instructor_input = InstructorInput(
+        # --- Clásicos (retrocompatibles) ---
         topic=payload.topic,
         target_audience=payload.target_audience,
         additional_context=payload.additional_context,
+        # --- Intención enriquecida del elicitor (paso 2) ---
+        course_name=payload.course_name,
+        creator_authority=payload.creator_authority,
+        operational_goal=payload.operational_goal,
+        final_deliverable=payload.final_deliverable,
+        audience_profile=payload.audience_profile,
+        content_pillars=payload.content_pillars,
+        application_context=payload.application_context,
+        out_of_scope=payload.out_of_scope,
+        tone=payload.tone,
     )
 
     course = create_course(
@@ -148,3 +164,27 @@ def get_course(
     course = get_course_by_id(db, course_id)
     _ensure_owned(course, current_user)
     return course
+
+
+@router.delete(
+    "/{course_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Eliminar un curso (solo si pertenece al colegio del usuario)",
+)
+def delete_course_endpoint(
+    course_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Borra el curso si pertenece al tenant del usuario; si no, 404.
+    Cualquier miembro del colegio puede borrar (coherente con crear/listar,
+    que tampoco exigen admin). Retorna 204 sin cuerpo.
+    IMPORTANTE: tras el commit NO se hace db.refresh(course) porque la fila
+    ya no existe.
+    """
+    course = get_course_by_id(db, course_id)
+    _ensure_owned(course, current_user)
+    delete_course(db, course)
+    db.commit()
+    return None

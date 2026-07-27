@@ -1,29 +1,35 @@
 """
 agents/writer.py
 Agente Redactor: cuarto y último agente de la cadena.
-
 Responsabilidad única:
-  - Recibir la CourseMatrix aprobada por el Auditor.
-  - Generar el contenido completo de cada lección:
-    texto estructurado, actividades de aprendizaje, criterios de evaluación.
+  - Recibir la CourseMatrix aprobada por el Auditor (y, opcionalmente, el
+    DirectorBrief con la intención del instructor).
+  - Generar el contenido completo de cada lección: texto estructurado,
+    actividades de aprendizaje, criterios de evaluación.
+  - Si recibe la intención, aplicarla al contenido:
+      * creator_authority -> voz del narrador (meta para TTS/producción).
+      * tone              -> registro (meta para TTS/producción).
+      * application_context -> sitúa los ejemplos ("aplicado a...").
+      * operational_goal  -> ancla de backward design en el cierre.
+      * final_deliverable -> recordatorio del artefacto final en el cierre.
+      * out_of_scope      -> bloque "fuera de alcance" (no desarrollar).
+    Si NO recibe brief (brief=None), redacta como siempre (retrocompatible).
   - Producir el CourseContent final (output del sistema).
   - Emitir un AgentMessage con el CourseContent como payload.
-
 El Redactor NO valida ni rediseña. Solo ejecuta contenido.
 """
-
 import logging
 from datetime import datetime, timezone
 
 from domain.models import (
     CourseMatrix,
-    Module,
     Lesson,
     LessonContent,
     CourseContent,
     AgentMessage,
     AgentRole,
     BloomLevel,
+    DirectorBrief,
 )
 from config.settings import get_settings
 
@@ -31,7 +37,6 @@ from config.settings import get_settings
 # ============================================================
 # PLANTILLAS DE CONTENIDO POR NIVEL DE BLOOM
 # ============================================================
-
 CONTENT_INTRO_TEMPLATES: dict[BloomLevel, str] = {
     BloomLevel.REMEMBER: (
         "En esta lección se establecen las bases conceptuales fundamentales. "
@@ -98,7 +103,7 @@ CONTENT_SECTION_BODIES: dict[BloomLevel, str] = {
         "y construir un mapa conceptual que integre las ideas centrales."
     ),
     BloomLevel.APPLY: (
-        "Se describen los procedimientos paso a paso, se示范an técnicas "
+        "Se describen los procedimientos paso a paso, se demuestran técnicas "
         "y se proporcionan guías de ejecución. El participante realiza "
         "ejercicios guiados y resuelve problemas estándar aplicando "
         "los métodos presentados."
@@ -132,10 +137,10 @@ CONTENT_CLOSING_TEMPLATE: str = (
     "conceptos en contextos más complejos de {topic}."
 )
 
+
 # ============================================================
 # ACTIVIDADES POR NIVEL DE BLOOM
 # ============================================================
-
 ACTIVITIES_BY_BLOOM: dict[BloomLevel, list[str]] = {
     BloomLevel.REMEMBER: [
         "Elaborar un glosario técnico con al menos 15 términos clave de la lección.",
@@ -175,10 +180,10 @@ ACTIVITIES_BY_BLOOM: dict[BloomLevel, list[str]] = {
     ],
 }
 
+
 # ============================================================
 # CRITERIOS DE EVALUACIÓN POR NIVEL DE BLOOM
 # ============================================================
-
 ASSESSMENT_BY_BLOOM: dict[BloomLevel, list[str]] = {
     BloomLevel.REMEMBER: [
         "Identifica correctamente al menos el 90% de los términos técnicos en una prueba de reconocimiento.",
@@ -217,7 +222,7 @@ class WriterAgent:
     """
     Agente Redactor.
     Genera el contenido completo de cada lección a partir
-    de la CourseMatrix aprobada.
+    de la CourseMatrix aprobada y, si la recibe, de la intención del instructor.
     """
 
     def __init__(self) -> None:
@@ -229,26 +234,26 @@ class WriterAgent:
     # ----------------------------------------------------------------
     # MÉTODO PÚBLICO PRINCIPAL
     # ----------------------------------------------------------------
-
-    def process(self, matrix: CourseMatrix) -> AgentMessage:
+    def process(
+        self,
+        matrix: CourseMatrix,
+        brief: DirectorBrief | None = None,
+    ) -> AgentMessage:
         """
         Genera el contenido completo del curso a partir de la CourseMatrix.
+        Si se pasa `brief`, aplica la intención del instructor al contenido.
         Retorna un AgentMessage con el CourseContent como payload.
-
-        Args:
-            matrix: CourseMatrix aprobada por el Auditor.
-
-        Returns:
-            AgentMessage con message_type='course_content'.
         """
         self._logger.info(
-            "WriterAgent iniciado | Curso: %s | Módulos: %d",
+            "WriterAgent iniciado | Curso: %s | Módulos: %d | Intención: %s",
             matrix.course_id,
             len(matrix.modules),
+            "SÍ" if brief is not None else "no",
         )
 
-        lessons_content: list[LessonContent] = []
+        intent = self._extract_intent(brief)
 
+        lessons_content: list[LessonContent] = []
         for module in matrix.modules:
             self._logger.info(
                 "Redactando módulo %s: '%s' (%d lecciones)",
@@ -256,9 +261,8 @@ class WriterAgent:
                 module.title,
                 len(module.lessons),
             )
-
             for lesson in module.lessons:
-                content = self._write_lesson(lesson, matrix.topic)
+                content = self._write_lesson(lesson, matrix.topic, intent)
                 lessons_content.append(content)
                 self._logger.info(
                     "  Lección %s redactada: '%s' [%s] (%.1fh)",
@@ -268,7 +272,6 @@ class WriterAgent:
                     lesson.estimated_hours,
                 )
 
-        # Construir CourseContent
         course_content = CourseContent(
             course_id=matrix.course_id,
             course_title=matrix.course_title,
@@ -284,7 +287,6 @@ class WriterAgent:
             course_content.generated_at,
         )
 
-        # Envolver en AgentMessage
         message = AgentMessage(
             sender=AgentRole.WRITER,
             receiver=AgentRole.DIRECTOR,
@@ -292,33 +294,56 @@ class WriterAgent:
             payload=course_content.model_dump(mode="json"),
             timestamp=self._now_iso(),
         )
-
         self._logger.info(
             "AgentMessage emitido: Redactor → Director | Tipo: %s",
             message.message_type,
         )
-
         return message
+
+    # ----------------------------------------------------------------
+    # INTENCIÓN DEL INSTRUCTOR (normalización segura)
+    # ----------------------------------------------------------------
+    def _extract_intent(self, brief: DirectorBrief | None) -> dict[str, str | None]:
+        """
+        Extrae y normaliza los campos de intención del brief.
+        Si brief es None, devuelve todo en None (comportamiento clásico).
+        """
+        def g(value: str | None) -> str | None:
+            if value is None:
+                return None
+            text = value.strip()
+            return text or None
+
+        if brief is None:
+            return {
+                "voice": None,
+                "tone": None,
+                "goal": None,
+                "deliverable": None,
+                "scenario": None,
+                "out_of_scope": None,
+            }
+        return {
+            "voice": g(brief.creator_authority),
+            "tone": g(brief.tone),
+            "goal": g(brief.operational_goal),
+            "deliverable": g(brief.final_deliverable),
+            "scenario": g(brief.application_context),
+            "out_of_scope": g(brief.out_of_scope),
+        }
 
     # ----------------------------------------------------------------
     # MÉTODOS PRIVADOS - REDACCIÓN
     # ----------------------------------------------------------------
-
     def _write_lesson(
-        self, lesson: Lesson, topic: str
+        self,
+        lesson: Lesson,
+        topic: str,
+        intent: dict[str, str | None],
     ) -> LessonContent:
-        """
-        Genera el contenido completo de una lección individual.
-        """
-        # --- Construir full_content ---
-        full_content = self._build_full_content(lesson, topic)
-
-        # --- Actividades ---
+        full_content = self._build_full_content(lesson, topic, intent)
         activities = self._get_activities(lesson.bloom_level)
-
-        # --- Criterios de evaluación ---
         assessment = self._get_assessment_criteria(lesson.bloom_level)
-
         return LessonContent(
             lesson_id=lesson.lesson_id,
             title=lesson.title,
@@ -329,22 +354,27 @@ class WriterAgent:
         )
 
     def _build_full_content(
-        self, lesson: Lesson, topic: str
+        self,
+        lesson: Lesson,
+        topic: str,
+        intent: dict[str, str | None],
     ) -> str:
-        """
-        Construye el texto completo de la lección en formato estructurado.
-        """
         parts: list[str] = []
 
         # --- Título ---
         parts.append(f"# {lesson.title}\n")
 
-        # --- Metadatos ---
-        parts.append(
+        # --- Metadatos (incluye voz/registro para producción TTS/video) ---
+        meta = (
             f"**ID:** {lesson.lesson_id} | "
             f"**Nivel de Bloom:** {lesson.bloom_level.value} | "
-            f"**Duración estimada:** {lesson.estimated_hours}h\n"
+            f"**Duración estimada:** {lesson.estimated_hours}h"
         )
+        if intent["voice"]:
+            meta += f"\n**Voz del narrador:** {intent['voice']}"
+        if intent["tone"]:
+            meta += f"\n**Registro:** {intent['tone']}"
+        parts.append(meta + "\n")
 
         # --- Objetivo de aprendizaje ---
         parts.append(f"\n## Objetivo de Aprendizaje\n\n{lesson.learning_objective}\n")
@@ -352,16 +382,21 @@ class WriterAgent:
         # --- Introducción ---
         intro_template = CONTENT_INTRO_TEMPLATES.get(
             lesson.bloom_level,
-            "En esta lección se abordarán los contenidos fundamentales de {topic}."
+            "En esta lección se abordarán los contenidos fundamentales de {topic}.",
         )
         intro = intro_template.format(topic=topic)
+        if intent["scenario"]:
+            intro += (
+                f" Mantén siempre presente el escenario real de aplicación: "
+                f"{intent['scenario']}."
+            )
         parts.append(f"\n## Introducción\n\n{intro}\n")
 
         # --- Desarrollo (secciones por cada key_topic) ---
         sections_text = ""
         body_template = CONTENT_SECTION_BODIES.get(
             lesson.bloom_level,
-            "Se desarrollan los contenidos principales del tema."
+            "Se desarrollan los contenidos principales del tema.",
         )
         for idx, subtopic in enumerate(lesson.key_topics, 1):
             section = CONTENT_SECTION_TEMPLATE.format(
@@ -370,23 +405,37 @@ class WriterAgent:
                 body=body_template,
             )
             sections_text += section
-
         development = CONTENT_DEVELOPMENT_TEMPLATE.format(sections=sections_text)
         parts.append(development)
 
-        # --- Síntesis y cierre ---
+        # --- Síntesis y cierre (con anclas de backward design) ---
         key_points = ", ".join(lesson.key_topics)
         closing = CONTENT_CLOSING_TEMPLATE.format(
             objective=lesson.learning_objective,
             key_points=key_points,
             topic=topic,
         )
+        if intent["goal"]:
+            closing += f" Todo lo visto aporta a que el alumno logre: {intent['goal']}."
+        if intent["deliverable"]:
+            closing += (
+                f" Recuerda que el artefacto final del curso es: "
+                f"{intent['deliverable']}; cada lección suma una pieza hacia él."
+            )
         parts.append(closing)
+
+        # --- Nota de producción: fuera de alcance (no desarrollar en audio/video) ---
+        if intent["out_of_scope"]:
+            parts.append(
+                "\n\n## Fuera de alcance (NO desarrollar)\n\n"
+                f"{intent['out_of_scope']}\n\n"
+                "_Nota de producción: estos temas quedan excluidos del guion "
+                "y del audio para mantener el curso acotado._"
+            )
 
         return "".join(parts)
 
     def _get_activities(self, bloom_level: BloomLevel) -> list[str]:
-        """Retorna actividades de aprendizaje según el nivel de Bloom."""
         return ACTIVITIES_BY_BLOOM.get(bloom_level, [
             "Realizar las actividades propuestas por el instructor.",
         ])
@@ -394,7 +443,6 @@ class WriterAgent:
     def _get_assessment_criteria(
         self, bloom_level: BloomLevel
     ) -> list[str]:
-        """Retorna criterios de evaluación según el nivel de Bloom."""
         return ASSESSMENT_BY_BLOOM.get(bloom_level, [
             "Cumplir con los criterios de evaluación establecidos por el instructor.",
         ])
@@ -402,8 +450,6 @@ class WriterAgent:
     # ----------------------------------------------------------------
     # UTILIDADES
     # ----------------------------------------------------------------
-
     @staticmethod
     def _now_iso() -> str:
-        """Retorna el timestamp actual en formato ISO 8601 (UTC)."""
         return datetime.now(timezone.utc).isoformat()

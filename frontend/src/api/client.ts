@@ -1,5 +1,14 @@
 const API_BASE = '/api/v1'
 
+/**
+ * Cliente HTTP mínimo del frontend.
+ *
+ * Blindaje de respuestas sin cuerpo (204/205): el borrado de curso devuelve
+ * 204 sin payload; parsear el cuerpo como JSON directamente sobre un cuerpo
+ * vacío lanza SyntaxError y rompería la UI aunque el backend hubiera borrado
+ * bien. Por eso leemos el cuerpo como texto y solo parseamos JSON si viene algo.
+ * El manejo de error también tolera detalles que no sean JSON válido.
+ */
 export async function apiRequest<T>(
   method: string,
   path: string,
@@ -30,9 +39,20 @@ export async function apiRequest<T>(
   })
 
   if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }))
-    throw new Error(err.detail || `Error ${resp.status}`)
+    const errText = await resp.text()
+    let detail = resp.statusText
+    if (errText) {
+      try {
+        const parsed = JSON.parse(errText)
+        detail = parsed?.detail || detail
+      } catch {
+        detail = errText
+      }
+    }
+    throw new Error(detail || `Error ${resp.status}`)
   }
 
-  return resp.json()
+  const text = await resp.text()
+  if (!text) return undefined as unknown as T
+  return JSON.parse(text) as T
 }

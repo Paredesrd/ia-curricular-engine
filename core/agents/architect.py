@@ -1,20 +1,28 @@
 """
 agents/architect.py
 Agente Arquitecto Curricular: segundo agente de la cadena.
-
 Responsabilidad única:
   - Recibir el DirectorBrief (emitido por el Director).
   - Diseñar la matriz curricular completa: módulos, lecciones,
     distribución de Bloom, horas estimadas.
   - Respetar TODAS las restricciones del Tenant contenidas en el brief.
-  - Emitir un AgentMessage con la CourseMatrix como payload,
-    dirigido al Auditor de Calidad.
-
+  - Si el instructor aportó INTENCIÓN enriquecida (pilares, objetivo,
+    entregable, nombre), usarla como los "huesos" del curso:
+      * content_pillars  -> títulos de módulos (1 pilar = 1 módulo),
+        agrupados o completados con un cierre si las horas del colegio
+        no permiten un módulo por pilar.
+      * course_name      -> título del curso.
+      * operational_goal -> ancla de los objetivos de lección.
+      * final_deliverable-> título del módulo de cierre (si se añade).
+    Si NO hay intención (CLI / llamada vieja), cae al diseño por plantillas.
+  - Emitir un AgentMessage con la CourseMatrix como payload, al Auditor.
+  - Si recibe feedback del Auditor (revise), ajustar la matriz en vez de
+    regenerar a ciegas.
 El Arquitecto NO redacta contenido. Solo diseña la estructura.
 """
-
 import logging
 import math
+import re
 from datetime import datetime, timezone
 
 from domain.models import (
@@ -25,6 +33,7 @@ from domain.models import (
     AgentMessage,
     AgentRole,
     BloomLevel,
+    RevisionFeedback,
 )
 from config.settings import get_settings
 
@@ -32,7 +41,6 @@ from config.settings import get_settings
 # ============================================================
 # CONSTANTES PEDAGÓGICAS
 # ============================================================
-
 # Orden natural de progresión cognitiva (Bloom)
 BLOOM_PROGRESSION: list[BloomLevel] = [
     BloomLevel.REMEMBER,
@@ -43,7 +51,7 @@ BLOOM_PROGRESSION: list[BloomLevel] = [
     BloomLevel.CREATE,
 ]
 
-# Plantillas de títulos de módulo según posición en el curso
+# Plantillas de títulos de módulo según posición (SOLO cuando no hay pilares)
 MODULE_TITLE_TEMPLATES: list[str] = [
     "Fundamentos de {topic}",
     "Principios y Marco Teórico de {topic}",
@@ -103,25 +111,19 @@ LESSON_TITLE_BY_BLOOM: dict[BloomLevel, list[str]] = {
 
 # Plantillas de objetivos de aprendizaje según nivel de Bloom
 OBJECTIVE_VERBS: dict[BloomLevel, list[str]] = {
-    BloomLevel.REMEMBER: [
-        "Identificar", "Definir", "Listar", "Reconocer", "Describir"
-    ],
-    BloomLevel.UNDERSTAND: [
-        "Explicar", "Interpretar", "Comparar", "Clasificar", "Resumir"
-    ],
-    BloomLevel.APPLY: [
-        "Aplicar", "Implementar", "Ejecutar", "Resolver", "Utilizar"
-    ],
-    BloomLevel.ANALYZE: [
-        "Analizar", "Diferenciar", "Examinar", "Descomponer", "Diagnosticar"
-    ],
-    BloomLevel.EVALUATE: [
-        "Evaluar", "Juzgar", "Valorar", "Justificar", "Priorizar"
-    ],
-    BloomLevel.CREATE: [
-        "Diseñar", "Crear", "Formular", "Desarrollar", "Proponer"
-    ],
+    BloomLevel.REMEMBER: ["Identificar", "Definir", "Listar", "Reconocer", "Describir"],
+    BloomLevel.UNDERSTAND: ["Explicar", "Interpretar", "Comparar", "Clasificar", "Resumir"],
+    BloomLevel.APPLY: ["Aplicar", "Implementar", "Ejecutar", "Resolver", "Utilizar"],
+    BloomLevel.ANALYZE: ["Analizar", "Diferenciar", "Examinar", "Descomponer", "Diagnosticar"],
+    BloomLevel.EVALUATE: ["Evaluar", "Juzgar", "Valorar", "Justificar", "Priorizar"],
+    BloomLevel.CREATE: ["Diseñar", "Crear", "Formular", "Desarrollar", "Proponer"],
 }
+
+# Separadores tolerados para partir pilares escritos en una sola línea.
+_PILLAR_SPLIT = re.compile(r"[;|]")
+# Numeración inicial a limpiar de cada pilar ("1)", "1.", "1-", "* ", "- ").
+_PILLAR_NUM = re.compile(r"^\s*[\d]+[\).\-\:]\s*")
+_PILLAR_BULLET = re.compile(r"^\s*[\*\-]\s+")
 
 
 class ArchitectAgent:
@@ -139,47 +141,51 @@ class ArchitectAgent:
     # ----------------------------------------------------------------
     # MÉTODO PÚBLICO PRINCIPAL
     # ----------------------------------------------------------------
-
-    def process(self, brief: DirectorBrief) -> AgentMessage:
+    def process(
+        self,
+        brief: DirectorBrief,
+        feedback: RevisionFeedback | None = None,
+    ) -> AgentMessage:
         """
         Diseña la CourseMatrix a partir del DirectorBrief.
-        Retorna un AgentMessage dirigido al Auditor.
-
-        Args:
-            brief: DirectorBrief emitido por el Director.
-
-        Returns:
-            AgentMessage con message_type='course_matrix'.
-
-        Raises:
-            ValueError: Si el brief es inválido o no se puede construir
-                        una matriz que cumpla las restricciones.
+        Si se pasa `feedback` (del Auditor), aplica sus ajustes; si no,
+        diseña desde cero. Retorna un AgentMessage dirigido al Auditor.
         """
         self._logger.info(
-            "ArchitectAgent iniciado | Curso: %s | Tema: '%s'",
+            "ArchitectAgent iniciado | Curso: %s | Tema: '%s' | Revisión: %s",
             brief.course_id,
             brief.topic,
+            "SÍ (con feedback)" if feedback else "no (diseño inicial)",
         )
 
-        # Paso 1: Calcular número de módulos
-        num_modules = self._calculate_num_modules(brief)
-        self._logger.info("Módulos calculados: %d", num_modules)
+        # Paso 1: Resolver las "specs" de módulo (pilares del instructor o
+        # plantillas por posición) y el número de módulos coherente con ellas
+        # y con las horas del colegio.
+        module_specs = self._resolve_module_specs(brief)
+        if module_specs is not None:
+            num_modules = len(module_specs)
+            self._logger.info(
+                "Módulos desde pilares del instructor: %d", num_modules
+            )
+        else:
+            num_modules = self._calculate_num_modules(brief)
+            module_specs = self._specs_from_templates(brief, num_modules)
+            self._logger.info("Módulos calculados por plantillas: %d", num_modules)
 
-        # Paso 2: Planificar distribución de Bloom
-        bloom_plan = self._plan_bloom_distribution(brief, num_modules)
+        # Paso 2: Planificar distribución de Bloom (reforzada por feedback)
+        bloom_plan = self._plan_bloom_distribution(brief, num_modules, feedback)
         self._logger.info(
             "Plan Bloom: %s",
             {k.value: v for k, v in bloom_plan.items()},
         )
 
-        # Paso 3: Construir módulos y lecciones
-        modules = self._build_modules(brief, num_modules, bloom_plan)
+        # Paso 3: Construir módulos y lecciones a partir de las specs
+        modules = self._build_modules(brief, num_modules, bloom_plan, module_specs, feedback)
         self._logger.info("Módulos construidos: %d", len(modules))
 
         # Paso 4: Calcular horas totales y distribución Bloom real
         total_hours = sum(m.estimated_hours for m in modules)
         bloom_distribution = self._compute_bloom_distribution(modules)
-
         self._logger.info(
             "Horas totales: %.1f | Distribución Bloom: %s",
             total_hours,
@@ -191,10 +197,10 @@ class ArchitectAgent:
             modules, total_hours, bloom_distribution, brief
         )
 
-        # Paso 6: Construir CourseMatrix
+        # Paso 6: Construir CourseMatrix (título desde la intención si la hay)
         matrix = CourseMatrix(
             course_id=brief.course_id,
-            course_title=self._generate_course_title(brief.topic),
+            course_title=self._generate_course_title(brief),
             topic=brief.topic,
             total_estimated_hours=round(total_hours, 1),
             modules=modules,
@@ -218,84 +224,217 @@ class ArchitectAgent:
             payload=matrix.model_dump(mode="json"),
             timestamp=self._now_iso(),
         )
-
         self._logger.info(
             "AgentMessage emitido: Arquitecto → Auditor | Tipo: %s",
             message.message_type,
         )
-
         return message
+
+    def revise(
+        self,
+        brief: DirectorBrief,
+        feedback: RevisionFeedback,
+    ) -> AgentMessage:
+        """
+        Re-diseña la matriz aplicando el feedback del Auditor.
+        Alias semántico de `process(brief, feedback)`.
+        """
+        return self.process(brief, feedback=feedback)
+
+    # ----------------------------------------------------------------
+    # INTENCIÓN DEL INSTRUCTOR -> SPECS DE MÓDULO
+    # ----------------------------------------------------------------
+    def _parse_pillars(self, raw: str | None) -> list[str]:
+        """
+        Extrae los pilares/pasos del instructor de forma tolerante.
+        Acepta líneas numeradas, viñetas, o una sola línea separada por ; | ,.
+        Retorna la lista limpia (sin numeración), en orden, sin vacíos.
+        """
+        if not raw:
+            return []
+        text = raw.strip()
+        if not text:
+            return []
+
+        # Partir por líneas; si no hay saltos, intentar separadores ; |
+        if "\n" in text:
+            chunks = text.splitlines()
+        elif _PILLAR_SPLIT.search(text):
+            chunks = _PILLAR_SPLIT.split(text)
+        else:
+            chunks = [text]
+
+        pillars: list[str] = []
+        for chunk in chunks:
+            item = chunk.strip()
+            if not item:
+                continue
+            item = _PILLAR_NUM.sub("", item)
+            item = _PILLAR_BULLET.sub("", item)
+            item = item.strip(" -:–—")
+            if item:
+                pillars.append(item)
+        return pillars
+
+    def _module_hour_bounds(self, brief: DirectorBrief) -> tuple[int, int]:
+        """
+        Rango de módulos físicamente viable según las horas del colegio.
+        min_viable = ceil(min_total / max_module)  (módulos como mínimo)
+        max_viable = floor(max_total / min_module)  (módulos como máximo)
+        Ambos acotados por settings.max_modules y >= 1.
+        """
+        min_viable = math.ceil(brief.min_total_hours / brief.max_module_hours)
+        max_viable = math.floor(brief.max_total_hours / brief.min_module_hours)
+        min_viable = max(1, min_viable)
+        max_viable = max(min_viable, min(max_viable, self._settings.max_modules))
+        return min_viable, max_viable
+
+    def _resolve_module_specs(
+        self, brief: DirectorBrief
+    ) -> list[dict] | None:
+        """
+        Convierte los pilares del instructor en specs de módulo.
+        Retorna None si no hay pilares (→ diseño por plantillas).
+        Cada spec = {"title": str, "pillar": str | None, "closing": bool}.
+        Respeta los huesos del instructor: si caben 1:1, perfecto; si son
+        demasiados para las horas del colegio, los AGRUPA (no los trunca);
+        si son pocos para el mínimo de horas, AÑADE un cierre anclado al
+        entregable final.
+        """
+        pillars = self._parse_pillars(brief.content_pillars)
+        if not pillars:
+            return None
+
+        min_viable, max_viable = self._module_hour_bounds(brief)
+
+        if len(pillars) > max_viable:
+            # Agrupar pilares en max_viable buckets contiguos (sin perder ninguno).
+            self._logger.warning(
+                "Pilares (%d) exceden el máximo viable de módulos (%d) para "
+                "las horas del colegio; se agrupan en %d módulos.",
+                len(pillars),
+                max_viable,
+                max_viable,
+            )
+            buckets: list[list[str]] = [[] for _ in range(max_viable)]
+            for i, p in enumerate(pillars):
+                buckets[i % max_viable].append(p)
+            specs: list[dict] = []
+            for bucket in buckets:
+                title = " / ".join(bucket)
+                specs.append({
+                    "title": title,
+                    "pillar": " / ".join(bucket),
+                    "closing": False,
+                })
+            return specs
+
+        # Caben 1:1.
+        specs = [
+            {"title": p, "pillar": p, "closing": False} for p in pillars
+        ]
+
+        # Si faltan módulos para el mínimo de horas, añadir cierre(s).
+        if len(specs) < min_viable:
+            extra = min_viable - len(specs)
+            self._logger.info(
+                "Pilares (%d) por debajo del mínimo viable de módulos (%d); "
+                "se añaden %d módulo(s) de cierre/integración.",
+                len(pillars),
+                min_viable,
+                extra,
+            )
+            for k in range(extra):
+                specs.append(self._closing_spec(brief, k))
+
+        return specs
+
+    def _closing_spec(self, brief: DirectorBrief, index: int) -> dict:
+        """Spec de módulo de cierre/integración anclado al entregable final."""
+        if brief.final_deliverable:
+            if index == 0:
+                title = f"Integración final: {brief.final_deliverable}"
+            else:
+                title = f"Cierre y puesta en práctica ({index + 1})"
+        else:
+            title = "Integración y cierre del curso"
+        return {"title": title, "pillar": None, "closing": True}
+
+    def _specs_from_templates(
+        self, brief: DirectorBrief, num_modules: int
+    ) -> list[dict]:
+        """Specs por plantillas de posición (modo sin pilares / retrocompatible)."""
+        specs: list[dict] = []
+        for i in range(num_modules):
+            if i < len(MODULE_TITLE_TEMPLATES):
+                title = MODULE_TITLE_TEMPLATES[i].format(topic=brief.topic)
+            else:
+                title = f"Módulo {i + 1}: {brief.topic} - Sección {i + 1}"
+            specs.append({"title": title, "pillar": None, "closing": False})
+        return specs
 
     # ----------------------------------------------------------------
     # MÉTODOS PRIVADOS - PLANIFICACIÓN
     # ----------------------------------------------------------------
+    def _effective_max_module_hours(
+        self, brief: DirectorBrief, feedback: RevisionFeedback | None
+    ) -> float:
+        """
+        Techo efectivo de horas por módulo (mínimo entre el máximo del Tenant
+        y el techo pedido por el Auditor en el feedback).
+        """
+        cap = float(brief.max_module_hours)
+        if feedback is not None and feedback.module_hours_cap is not None:
+            cap = min(cap, float(feedback.module_hours_cap))
+        return cap
 
     def _calculate_num_modules(self, brief: DirectorBrief) -> int:
-        """
-        Calcula el número óptimo de módulos respetando restricciones.
-
-        Estrategia:
-          - Apuntar al punto medio de horas totales.
-          - Dividir por el punto medio de horas por módulo.
-          - Ajustar para cumplir todas las restricciones.
-        """
+        """Número óptimo de módulos por horas (modo sin pilares)."""
         target_total = (brief.min_total_hours + brief.max_total_hours) / 2.0
         target_module = (brief.min_module_hours + brief.max_module_hours) / 2.0
 
-        # Cálculo inicial
         num_modules = max(1, round(target_total / target_module))
 
-        # Restricción: num_modules * min_module_hours <= max_total_hours
         while num_modules > 1 and (num_modules * brief.min_module_hours) > brief.max_total_hours:
             num_modules -= 1
-
-        # Restricción: num_modules * max_module_hours >= min_total_hours
         while (num_modules * brief.max_module_hours) < brief.min_total_hours:
             num_modules += 1
 
-        # Restricción: al menos 1 módulo
         num_modules = max(1, num_modules)
-
-        # Restricción: no exceder un límite razonable (12 módulos máximo)
-        num_modules = min(num_modules, 12)
-
+        num_modules = min(num_modules, self._settings.max_modules)
         return num_modules
 
     def _plan_bloom_distribution(
-        self, brief: DirectorBrief, num_modules: int
+        self,
+        brief: DirectorBrief,
+        num_modules: int,
+        feedback: RevisionFeedback | None = None,
     ) -> dict[BloomLevel, int]:
-        """
-        Planifica cuántas lecciones de cada nivel de Bloom se necesitan.
-
-        Garantiza que TODOS los required_bloom_levels estén presentes.
-        Distribuye el resto siguiendo la progresión cognitiva natural.
-        """
+        """Planifica lecciones por nivel de Bloom; garantiza los requeridos."""
         required = brief.required_bloom_levels
         plan: dict[BloomLevel, int] = {level: 0 for level in BLOOM_PROGRESSION}
 
-        # Calcular total de lecciones estimado
         total_lessons = self._estimate_total_lessons(brief, num_modules)
 
-        # Garantizar al menos 1 lección por cada Bloom requerido
         for level in required:
             plan[level] = 1
 
-        # Distribuir lecciones restantes
-        remaining = total_lessons - len(required)
+        if feedback is not None:
+            for level in feedback.missing_bloom_levels:
+                if plan.get(level, 0) < 1:
+                    plan[level] = 1
+
+        remaining = total_lessons - sum(plan.values())
         if remaining > 0:
-            # Filtrar solo los niveles requeridos para la distribución
             required_ordered = [
                 level for level in BLOOM_PROGRESSION if level in required
             ]
-            # Distribuir proporcionalmente con peso progresivo
             weights = list(range(1, len(required_ordered) + 1))
             total_weight = sum(weights)
-
             for i, level in enumerate(required_ordered):
                 extra = round(remaining * weights[i] / total_weight)
                 plan[level] += extra
 
-            # Ajustar sobrantes/faltantes al nivel intermedio
             current_total = sum(plan.values())
             diff = total_lessons - current_total
             if diff != 0 and required_ordered:
@@ -307,22 +446,17 @@ class ArchitectAgent:
     def _estimate_total_lessons(
         self, brief: DirectorBrief, num_modules: int
     ) -> int:
-        """
-        Estima el número total de lecciones del curso.
-        """
+        """Estima el número total de lecciones del curso."""
         target_total = (brief.min_total_hours + brief.max_total_hours) / 2.0
         target_lesson_hours = (
             self._settings.default_min_hours_per_lesson
             + self._settings.default_max_hours_per_lesson
         ) / 2.0
-
         total_lessons = max(num_modules, round(target_total / target_lesson_hours))
 
-        # Respetar mínimo por módulo
         min_total = num_modules * brief.min_lessons_per_module
         total_lessons = max(total_lessons, min_total)
 
-        # Respetar máximo por módulo
         max_total = num_modules * brief.max_lessons_per_module
         total_lessons = min(total_lessons, max_total)
 
@@ -331,79 +465,65 @@ class ArchitectAgent:
     # ----------------------------------------------------------------
     # MÉTODOS PRIVADOS - CONSTRUCCIÓN
     # ----------------------------------------------------------------
-
     def _build_modules(
         self,
         brief: DirectorBrief,
         num_modules: int,
         bloom_plan: dict[BloomLevel, int],
+        module_specs: list[dict],
+        feedback: RevisionFeedback | None = None,
     ) -> list[Module]:
-        """
-        Construye todos los módulos con sus lecciones.
-        """
+        """Construye todos los módulos con sus lecciones, desde las specs."""
         modules: list[Module] = []
         target_total = (brief.min_total_hours + brief.max_total_hours) / 2.0
         hours_per_module = target_total / num_modules
 
-        # Ajustar horas por módulo a los límites
+        effective_max = self._effective_max_module_hours(brief, feedback)
         hours_per_module = max(
             float(brief.min_module_hours),
-            min(float(brief.max_module_hours), hours_per_module),
+            min(effective_max, hours_per_module),
         )
 
-        # Contador global de lecciones por Bloom
+        goal = (brief.operational_goal or "").strip() or None
+
         bloom_counters: dict[BloomLevel, int] = {
             level: 0 for level in BLOOM_PROGRESSION
         }
-
-        # Índice de título de lección por Bloom (para no repetir)
         bloom_title_index: dict[BloomLevel, int] = {
             level: 0 for level in BLOOM_PROGRESSION
         }
 
-        for m_idx in range(num_modules):
+        for m_idx, spec in enumerate(module_specs):
             module_id = f"M{m_idx + 1}"
-            module_title = self._get_module_title(m_idx, brief.topic)
+            module_title = spec["title"]
+            pillar = spec.get("pillar")
 
-            # Determinar cuántas lecciones en este módulo
             lessons_in_module = self._lessons_for_module(
                 m_idx, num_modules, brief, bloom_plan, bloom_counters
             )
 
-            # Construir lecciones del módulo
             lessons: list[Lesson] = []
-            module_hours = 0.0
-
             for l_idx in range(lessons_in_module):
-                # Seleccionar nivel de Bloom para esta lección
                 bloom_level = self._select_bloom_for_lesson(
                     m_idx, l_idx, num_modules, lessons_in_module,
-                    brief, bloom_plan, bloom_counters
+                    brief, bloom_plan, bloom_counters,
                 )
                 bloom_counters[bloom_level] += 1
 
-                # Calcular horas de la lección
-                lesson_hours = round(
-                    hours_per_module / lessons_in_module, 1
-                )
+                lesson_hours = round(hours_per_module / lessons_in_module, 1)
                 lesson_hours = max(
                     self._settings.default_min_hours_per_lesson,
                     min(self._settings.default_max_hours_per_lesson, lesson_hours),
                 )
-                module_hours += lesson_hours
 
-                # Generar título de lección
                 lesson_title = self._get_lesson_title(
                     bloom_level, bloom_title_index[bloom_level]
                 )
                 bloom_title_index[bloom_level] += 1
 
-                # Generar objetivo de aprendizaje
-                objective = self._generate_objective(bloom_level, brief.topic)
-
-                # Generar temas clave
+                objective = self._generate_objective(bloom_level, brief.topic, goal)
                 key_topics = self._generate_key_topics(
-                    bloom_level, brief.topic, l_idx
+                    bloom_level, brief.topic, l_idx, pillar
                 )
 
                 lesson = Lesson(
@@ -416,18 +536,14 @@ class ArchitectAgent:
                 )
                 lessons.append(lesson)
 
-            # Ajustar horas del módulo
+            # Coherencia: las horas del módulo SON la suma de sus lecciones.
             module_hours = round(sum(l.estimated_hours for l in lessons), 1)
-            module_hours = max(
-                float(brief.min_module_hours),
-                min(float(brief.max_module_hours), module_hours),
-            )
 
             module = Module(
                 module_id=module_id,
                 title=module_title,
                 description=self._generate_module_description(
-                    m_idx, brief.topic, lessons
+                    m_idx, brief.topic, lessons, pillar, goal, spec.get("closing", False)
                 ),
                 estimated_hours=module_hours,
                 lessons=lessons,
@@ -444,20 +560,14 @@ class ArchitectAgent:
         bloom_plan: dict[BloomLevel, int],
         bloom_counters: dict[BloomLevel, int],
     ) -> int:
-        """
-        Determina cuántas lecciones debe tener un módulo específico.
-        """
+        """Cuántas lecciones debe tener un módulo específico."""
         total_lessons = self._estimate_total_lessons(brief, num_modules)
         base = total_lessons // num_modules
         remainder = total_lessons % num_modules
 
-        # Distribuir el residuo entre los primeros módulos
         count = base + (1 if module_index < remainder else 0)
-
-        # Respetar límites del Tenant
         count = max(brief.min_lessons_per_module, count)
         count = min(brief.max_lessons_per_module, count)
-
         return count
 
     def _select_bloom_for_lesson(
@@ -470,37 +580,25 @@ class ArchitectAgent:
         bloom_plan: dict[BloomLevel, int],
         bloom_counters: dict[BloomLevel, int],
     ) -> BloomLevel:
-        """
-        Selecciona el nivel de Bloom para una lección específica.
-
-        Estrategia:
-          - Progresión cognitiva a lo largo del curso.
-          - Garantizar que todos los Bloom requeridos se cumplan.
-          - Priorizar niveles con déficit en el plan.
-        """
+        """Selecciona el nivel de Bloom para una lección específica."""
         required = brief.required_bloom_levels
         required_ordered = [
             level for level in BLOOM_PROGRESSION if level in required
         ]
 
-        # Posición relativa en el curso (0.0 a 1.0)
         global_lesson_pos = (
             (module_index * lessons_in_module + lesson_index)
             / max(1, num_modules * lessons_in_module - 1)
         )
 
-        # Primero: verificar si hay algún Bloom requerido con déficit
         for level in required_ordered:
             if bloom_counters[level] < bloom_plan[level]:
-                # ¿Es el momento adecuado para este nivel?
                 level_pos = BLOOM_PROGRESSION.index(level) / max(
                     1, len(BLOOM_PROGRESSION) - 1
                 )
-                # Si la posición global está cerca de la posición del nivel
                 if abs(global_lesson_pos - level_pos) < 0.4:
                     return level
 
-        # Segundo: seleccionar por progresión natural
         target_index = int(global_lesson_pos * (len(required_ordered) - 1))
         target_index = max(0, min(len(required_ordered) - 1, target_index))
         return required_ordered[target_index]
@@ -508,29 +606,27 @@ class ArchitectAgent:
     # ----------------------------------------------------------------
     # MÉTODOS PRIVADOS - GENERACIÓN DE TEXTO ESTRUCTURAL
     # ----------------------------------------------------------------
-
-    def _generate_course_title(self, topic: str) -> str:
-        """Genera el título del curso."""
-        return f"Curso de {topic}"
-
-    def _get_module_title(self, index: int, topic: str) -> str:
-        """Genera el título de un módulo según su posición."""
-        if index < len(MODULE_TITLE_TEMPLATES):
-            return MODULE_TITLE_TEMPLATES[index].format(topic=topic)
-        return f"Módulo {index + 1}: {topic} - Sección {index + 1}"
+    def _generate_course_title(self, brief: DirectorBrief) -> str:
+        """Título del curso: el nombre del instructor si lo dio; si no, por tema."""
+        name = (brief.course_name or "").strip()
+        if name:
+            return name
+        return f"Curso de {brief.topic}"
 
     def _get_lesson_title(
         self, bloom_level: BloomLevel, variant_index: int
     ) -> str:
-        """Genera el título de una lección según su nivel de Bloom."""
         titles = LESSON_TITLE_BY_BLOOM.get(bloom_level, ["Contenido de la lección"])
         idx = variant_index % len(titles)
         return titles[idx]
 
     def _generate_objective(
-        self, bloom_level: BloomLevel, topic: str
+        self,
+        bloom_level: BloomLevel,
+        topic: str,
+        goal: str | None = None,
     ) -> str:
-        """Genera un objetivo de aprendizaje según el nivel de Bloom."""
+        """Objetivo por Bloom; si hay objetivo operativo, lo ancla al final."""
         verbs = OBJECTIVE_VERBS.get(bloom_level, ["Comprender"])
         verb = verbs[0]
         templates = {
@@ -541,64 +637,97 @@ class ArchitectAgent:
             BloomLevel.EVALUATE: f"{verb} alternativas de solución y emitir juicios fundamentados en {topic}.",
             BloomLevel.CREATE: f"{verb} soluciones innovadoras y propuestas originales en {topic}.",
         }
-        return templates.get(bloom_level, f"{verb} aspectos relevantes de {topic}.")
+        base = templates.get(bloom_level, f"{verb} aspectos relevantes de {topic}.")
+        if goal:
+            return f"{base} Todo orientado a que el alumno logre: {goal}."
+        return base
 
     def _generate_key_topics(
-        self, bloom_level: BloomLevel, topic: str, lesson_index: int
+        self,
+        bloom_level: BloomLevel,
+        topic: str,
+        lesson_index: int,
+        pillar: str | None = None,
     ) -> list[str]:
-        """Genera temas clave para una lección."""
+        """Temas clave; si el módulo viene de un pilar, este encabeza la lista."""
         base_topics = {
             BloomLevel.REMEMBER: [
                 f"Terminología de {topic}",
-                f"Definiciones clave",
-                f"Marco normativo aplicable",
+                "Definiciones clave",
+                "Marco normativo aplicable",
             ],
             BloomLevel.UNDERSTAND: [
                 f"Principios teóricos de {topic}",
-                f"Mecanismos y relaciones causales",
-                f"Comparación de enfoques",
+                "Mecanismos y relaciones causales",
+                "Comparación de enfoques",
             ],
             BloomLevel.APPLY: [
-                f"Procedimientos operativos",
+                "Procedimientos operativos",
                 f"Herramientas y técnicas de {topic}",
-                f"Resolución de problemas estándar",
+                "Resolución de problemas estándar",
             ],
             BloomLevel.ANALYZE: [
-                f"Descomposición de problemas",
+                "Descomposición de problemas",
                 f"Análisis de casos en {topic}",
-                f"Identificación de patrones",
+                "Identificación de patrones",
             ],
             BloomLevel.EVALUATE: [
-                f"Criterios de evaluación",
+                "Criterios de evaluación",
                 f"Análisis de riesgos en {topic}",
-                f"Toma de decisiones",
+                "Toma de decisiones",
             ],
             BloomLevel.CREATE: [
-                f"Diseño de soluciones",
+                "Diseño de soluciones",
                 f"Formulación de proyectos en {topic}",
-                f"Innovación y mejora continua",
+                "Innovación y mejora continua",
             ],
         }
-        return base_topics.get(bloom_level, [f"Contenido de {topic}"])
+        topics = list(base_topics.get(bloom_level, [f"Contenido de {topic}"]))
+        if pillar:
+            # El pilar como ancla principal para el Redactor.
+            topics = [pillar] + [t for t in topics if t != pillar][:2]
+        return topics
 
     def _generate_module_description(
-        self, module_index: int, topic: str, lessons: list[Lesson]
+        self,
+        module_index: int,
+        topic: str,
+        lessons: list[Lesson],
+        pillar: str | None = None,
+        goal: str | None = None,
+        closing: bool = False,
     ) -> str:
-        """Genera la descripción de un módulo."""
-        bloom_levels_in_module = set(l.bloom_level.value for l in lessons)
+        """Descripción del módulo: habla del pilar si lo hay; si no, genérica."""
+        bloom_levels_in_module = sorted({l.bloom_level.value for l in lessons})
         num_lessons = len(lessons)
+        bloom_txt = ", ".join(bloom_levels_in_module)
+
+        if closing and goal:
+            return (
+                f"Módulo de cierre e integración del curso de {topic}. "
+                f"Consolida lo aprendido en {num_lessons} lecciones "
+                f"(niveles: {bloom_txt}) para alcanzar el objetivo final: {goal}."
+            )
+        if pillar:
+            lead = (
+                f"Paso del proceso: {pillar}. "
+                f"Este módulo desarrolla ese pilar en {num_lessons} lecciones "
+                f"(niveles cognitivos: {bloom_txt}) dentro del curso de {topic}."
+            )
+            if goal:
+                lead += f" Aporta directamente a: {goal}."
+            return lead
+
         return (
             f"Módulo {module_index + 1} del curso de {topic}. "
             f"Contiene {num_lessons} lecciones que cubren los niveles "
-            f"cognitivos: {', '.join(sorted(bloom_levels_in_module))}. "
-            f"Enfocado en el desarrollo progresivo de competencias "
-            f"en {topic}."
+            f"cognitivos: {bloom_txt}. Enfocado en el desarrollo progresivo "
+            f"de competencias en {topic}."
         )
 
     # ----------------------------------------------------------------
     # MÉTODOS PRIVADOS - VALIDACIÓN
     # ----------------------------------------------------------------
-
     def _validate_matrix_against_brief(
         self,
         modules: list[Module],
@@ -606,13 +735,9 @@ class ArchitectAgent:
         bloom_distribution: dict[BloomLevel, int],
         brief: DirectorBrief,
     ) -> None:
-        """
-        Valida que la matriz construida cumple TODAS las restricciones
-        del DirectorBrief. Lanza ValueError si hay incumplimientos.
-        """
+        """Valida la matriz contra TODAS las restricciones. Lanza ValueError."""
         errors: list[str] = []
 
-        # Horas totales
         if total_hours < brief.min_total_hours:
             errors.append(
                 f"Horas totales ({total_hours:.1f}) < "
@@ -624,7 +749,6 @@ class ArchitectAgent:
                 f"máximo permitido ({brief.max_total_hours})"
             )
 
-        # Horas por módulo
         for module in modules:
             if module.estimated_hours < brief.min_module_hours:
                 errors.append(
@@ -637,7 +761,6 @@ class ArchitectAgent:
                     f"máximo ({brief.max_module_hours})"
                 )
 
-        # Lecciones por módulo
         for module in modules:
             num_lessons = len(module.lessons)
             if num_lessons < brief.min_lessons_per_module:
@@ -651,7 +774,6 @@ class ArchitectAgent:
                     f"máximo ({brief.max_lessons_per_module})"
                 )
 
-        # Bloom requeridos presentes
         for level in brief.required_bloom_levels:
             if bloom_distribution.get(level, 0) == 0:
                 errors.append(
@@ -674,11 +796,9 @@ class ArchitectAgent:
     # ----------------------------------------------------------------
     # MÉTODOS PRIVADOS - UTILIDADES
     # ----------------------------------------------------------------
-
     def _compute_bloom_distribution(
         self, modules: list[Module]
     ) -> dict[BloomLevel, int]:
-        """Calcula la distribución real de Bloom en la matriz."""
         distribution: dict[BloomLevel, int] = {
             level: 0 for level in BloomLevel
         }
@@ -689,5 +809,4 @@ class ArchitectAgent:
 
     @staticmethod
     def _now_iso() -> str:
-        """Retorna el timestamp actual en formato ISO 8601 (UTC)."""
         return datetime.now(timezone.utc).isoformat()

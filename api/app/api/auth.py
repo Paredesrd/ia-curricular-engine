@@ -2,7 +2,6 @@
 api/app/api/auth.py
 Router de autenticación: registro (fundación de tenant), login (JWT) y /me.
 """
-
 from fastapi import APIRouter, Depends, Form, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -15,17 +14,13 @@ from api.app.core.security import (
     verify_password,
 )
 from api.app.crud.tenant import create_tenant, get_tenant_by_slug
-from api.app.crud.user import (
-    create_user,
-    get_user_by_email_and_tenant,
-)
+from api.app.crud.user import create_user, get_user_by_email
 from api.app.models.user import ROLE_ADMIN, User
 from api.app.schemas.user import (
     TokenResponse,
     UserRegisterRequest,
     UserWithTenantResponse,
 )
-
 
 router = APIRouter()
 
@@ -40,6 +35,7 @@ def register(payload: UserRegisterRequest, db: Session = Depends(get_db)):
     """
     Crea un tenant nuevo (colegio) y a su primer usuario con rol admin.
     - Si el slug ya existe → 409.
+    - Si el email ya existe en CUALQUIER colegio → 409 (unicidad global).
     - Operación atómica: si algo falla, no queda tenant huérfano.
     """
     # 1. El slug debe estar libre (regla de seguridad: no colarse en tenant ajeno).
@@ -70,7 +66,7 @@ def register(payload: UserRegisterRequest, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Conflicto de unicidad al registrar (slug o email).",
+            detail="Conflicto de unicidad al registrar (slug o email ya en uso).",
         )
 
     return user
@@ -82,15 +78,16 @@ def register(payload: UserRegisterRequest, db: Session = Depends(get_db)):
     summary="Autenticar y obtener un JWT",
 )
 def login(
-    tenant_slug: str = Form(..., description="Identificador del colegio (slug)."),
     username: str = Form(..., description="Email del usuario."),
     password: str = Form(...),
     db: Session = Depends(get_db),
 ):
     """
-    Autenticación por email + password + slug del tenant.
-    Retorna un JWT. Usa Form para compatibilidad con el botón Authorize de /docs.
-    Cualquier fallo devuelve 401 genérico (no enumera tenants ni usuarios).
+    Autenticación por email + password (SIN slug).
+    El tenant (colegio) se deduce del propio usuario: como el email es único
+    a nivel global, buscar por email identifica unívocamente al usuario y a
+    su tenant. Retorna un JWT con sub/tenant_id/role.
+    Cualquier fallo de credenciales devuelve 401 genérico (no enumera usuarios).
     """
     invalid = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -98,19 +95,25 @@ def login(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    tenant = get_tenant_by_slug(db, tenant_slug)
-    if tenant is None or not tenant.is_active:
-        raise invalid
+    # 1. Identificar al usuario (y su tenant) solo por el email.
+    user = get_user_by_email(db, email=username)
 
-    user = get_user_by_email_and_tenant(db, email=username, tenant_id=tenant.id)
+    # 2. Validar existencia + contraseña. Orden intencional: no revelar si el
+    #    email existe o no (misma respuesta 401 en ambos casos).
     if user is None or not verify_password(password, user.hashed_password):
         raise invalid
 
+    # 3. Estado del usuario.
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Cuenta inactiva.",
         )
+
+    # 4. Estado del tenant deducido. Si el colegio está desactivado, no se
+    #    permite el acceso (se responde 401 para no filtrar estado del tenant).
+    if user.tenant is None or not user.tenant.is_active:
+        raise invalid
 
     access_token = create_access_token(
         data={

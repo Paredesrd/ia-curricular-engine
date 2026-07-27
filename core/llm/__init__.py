@@ -1,0 +1,1 @@
+"""Paquete de acceso a modelos de lenguaje (puerto/adaptador)."""

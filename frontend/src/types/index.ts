@@ -33,15 +33,19 @@ export interface RegisterData {
   full_name: string
 }
 
+// Login solo con email (username) + password. El tenant lo deduce el backend.
 export interface LoginData {
-  tenant_slug: string
   username: string
   password: string
 }
 
 export type BloomLevel =
-  | 'remember' | 'understand' | 'apply'
-  | 'analyze' | 'evaluate' | 'create'
+  | 'remember'
+  | 'understand'
+  | 'apply'
+  | 'analyze'
+  | 'evaluate'
+  | 'create'
 
 export interface AccreditationRules {
   min_total_hours: number
@@ -105,6 +109,25 @@ export interface CourseContent {
   generated_at: string
 }
 
+// --- Auditoría de calidad (quality_report) ---
+export interface QualityIssue {
+  issue_id: string
+  severity: 'critical' | 'major' | 'minor'
+  component: string
+  description: string
+  suggestion: string
+}
+
+export interface QualityReport {
+  course_id: string
+  status: 'approved' | 'rejected' | 'needs_revision'
+  total_issues: number
+  critical_issues: number
+  issues: QualityIssue[]
+  summary: string
+  recommendations: string[]
+}
+
 export interface CourseResponse {
   id: string
   tenant_id: string
@@ -114,7 +137,7 @@ export interface CourseResponse {
   additional_context: string | null
   status: string
   course_matrix: CourseMatrix | null
-  quality_report: Record<string, unknown> | null
+  quality_report: QualityReport | null
   course_content: CourseContent | null
   error_message: string | null
   created_at: string
@@ -122,7 +145,60 @@ export interface CourseResponse {
 }
 
 export interface CreateCourseData {
+  // --- Clásicos (retrocompatibles) ---
   topic: string
   target_audience?: string
   additional_context?: string
+  // --- Intención enriquecida del elicitor (paso 2) ---
+  course_name?: string
+  creator_authority?: string
+  operational_goal?: string
+  final_deliverable?: string
+  audience_profile?: string
+  content_pillars?: string
+  application_context?: string
+  out_of_scope?: string
+  tone?: string
+}
+
+// --- Elicitor / intake conversacional ---
+export interface IntakeTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface IntakeClarification {
+  field: string
+  question: string
+  example: string
+  severity: 'blocking' | 'advisory'
+}
+
+export interface EnrichedInstructorInput {
+  course_name: string
+  creator_authority: string
+  operational_goal: string
+  final_deliverable: string
+  audience_profile: string
+  content_pillars: string
+  application_context: string
+  out_of_scope: string
+  tone: string
+  additional_context: string
+}
+
+export interface IntakeRequest {
+  draft: Record<string, string>
+  free_text: string
+  history: IntakeTurn[]
+}
+
+export interface IntakeResponse {
+  status: 'ready' | 'needs_clarification'
+  score: number
+  assistant_message: string
+  clarifications: IntakeClarification[]
+  suggested_draft: Record<string, string>
+  enriched_input: EnrichedInstructorInput | null
+  mode: 'llm' | 'rules'
 }

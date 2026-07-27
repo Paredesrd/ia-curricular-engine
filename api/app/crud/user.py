@@ -2,7 +2,6 @@
 api/app/crud/user.py
 CRUD del modelo User.
 """
-
 import uuid
 
 from sqlalchemy import select
@@ -17,10 +16,28 @@ def get_user_by_id(db: Session, user_id: uuid.UUID) -> User | None:
     return db.execute(stmt).scalar_one_or_none()
 
 
+def get_user_by_email(db: Session, *, email: str) -> User | None:
+    """
+    Obtiene un usuario por email a nivel GLOBAL (sin tenant).
+    Como el email es único globalmente, esto identifica unívocamente al
+    usuario y, por su relación, a su tenant. Se usa en el login sin slug.
+    Carga el tenant eagerly para poder validar tenant.is_active sin lazy load.
+    """
+    stmt = (
+        select(User)
+        .options(selectinload(User.tenant))
+        .where(User.email == email)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
 def get_user_by_email_and_tenant(
     db: Session, *, email: str, tenant_id: uuid.UUID
 ) -> User | None:
-    """Obtiene un usuario por email dentro de un tenant específico."""
+    """
+    Obtiene un usuario por email dentro de un tenant específico.
+    Se conserva por compatibilidad con otros módulos; el login ya no la usa.
+    """
     stmt = (
         select(User)
         .options(selectinload(User.tenant))
